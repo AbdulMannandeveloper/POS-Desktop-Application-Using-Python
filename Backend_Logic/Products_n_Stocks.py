@@ -298,3 +298,68 @@ def record_stock_purchase(product_id, version_id, qty, price, supplier, notes=""
     """, (product_id, version_id, qty, price, supplier, notes))
     conn.commit()
     conn.close()
+
+
+def delete_product_safely(product_id):
+    """
+    Deletes a product ONLY if it has no associated sales.
+    Returns: (bool, message)
+    """
+    conn = sqlite3.connect("POS.db")
+    cur = conn.cursor()
+    
+    try:
+        # 1. Check for sales
+        cur.execute("SELECT COUNT(*) FROM Sale_Items WHERE product_id = ?", (product_id,))
+        if cur.fetchone()[0] > 0:
+            return False, "Cannot delete: Product has existing sales records. Archive it instead."
+
+        # 2. Delete dependencies (Versions, Stock Transactions)
+        cur.execute("DELETE FROM Stock_Transactions WHERE product_id = ?", (product_id,))
+        cur.execute("DELETE FROM Product_Versions WHERE product_id = ?", (product_id,))
+        
+        # 3. Delete the Product
+        cur.execute("DELETE FROM Products WHERE product_id = ?", (product_id,))
+        
+        conn.commit()
+        return True, "Product deleted successfully."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error: {e}"
+    finally:
+        conn.close()
+
+# Append this to Backend_Logic/Products_n_Stocks.py
+
+def delete_version_safely(version_id):
+    """
+    Deletes a specific stock version (batch) ONLY if it has no associated sales.
+    Returns: (bool, message)
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    
+    try:
+        # 1. Check for sales dependencies
+        # We check if this specific version_id exists in Sale_Items
+        cur.execute("SELECT COUNT(*) FROM Sale_Items WHERE version_id = ?", (version_id,))
+        count = cur.fetchone()[0]
+        
+        if count > 0:
+            return False, f"Cannot delete: This version has {count} associated sales records."
+
+        # 2. Delete the Version
+        cur.execute("DELETE FROM Product_Versions WHERE version_id = ?", (version_id,))
+        
+        # Optional: You might want to remove the StockPurchase record too if it was a mistake entry
+        # cur.execute("DELETE FROM StockPurchases WHERE version_id = ?", (version_id,))
+        
+        conn.commit()
+        return True, "Stock version deleted successfully."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error: {e}"
+    finally:
+        conn.close()

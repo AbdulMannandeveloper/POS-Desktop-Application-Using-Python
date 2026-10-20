@@ -1,5 +1,6 @@
 # Frontend_Logic/products_ui.py
-
+from PyQt5.QtWidgets import QMenu, QMessageBox
+from PyQt5.QtCore import Qt, QPoint
 import sqlite3
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -17,6 +18,7 @@ from Backend_Logic.Products_n_Stocks import (
     supplier_stock_return,
     get_product_stock,
     list_product_versions,
+    delete_version_safely
 )
 
 DB_NAME = "POS.db"
@@ -49,12 +51,13 @@ def fetch_all_products():
 
 # ---------------------- Dialogs ----------------------
 class VersionsDialog(QDialog):
-    """Dialog to display product versions in a table."""
+    """Dialog to display product versions in a table with Delete capability."""
 
     def __init__(self, product_id, product_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Versions — {product_name}")
         self.resize(720, 320)
+        self.product_id = product_id # Store for refreshing
 
         layout = QVBoxLayout(self)
 
@@ -66,10 +69,19 @@ class VersionsDialog(QDialog):
             "Box Selling Price", "Current Stock (boxes)", "Valid From"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        
+        # --- NEW: Enable Context Menu ---
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._open_context_menu)
+        # --------------------------------
+
         layout.addWidget(self.table)
 
-        # Populate table
-        versions = list_product_versions(product_id)
+        self.load_versions() # Extracted loading to a method for easy refresh
+
+    def load_versions(self):
+        """Populate table with versions."""
+        versions = list_product_versions(self.product_id)
         self.table.setRowCount(len(versions))
         for r, version in enumerate(versions):
             cells = [
@@ -84,9 +96,43 @@ class VersionsDialog(QDialog):
                 item = QTableWidgetItem("" if val is None else str(val))
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, c, item)
+            
             # Enable inline edit
             self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
             self.table.itemChanged.connect(self._handle_version_edit)
+
+    def _open_context_menu(self, position):
+        """Handle Right-Click on the Versions Table."""
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+
+        row = item.row()
+        # Column 0 is Version ID
+        version_id = self.table.item(row, 0).text()
+        
+        menu = QMenu()
+        delete_action = menu.addAction(f"❌ Delete Version {version_id}")
+        
+        action = menu.exec_(self.table.mapToGlobal(position))
+
+        if action == delete_action:
+            confirm = QMessageBox.question(
+                self, "Confirm Delete",
+                f"Are you sure you want to delete Version {version_id}?\n"
+                "This cannot be undone and is only allowed if no sales exist for this batch.",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if confirm == QMessageBox.Yes:
+                success, msg = delete_version_safely(version_id)
+                if success:
+                    QMessageBox.information(self, "Success", msg)
+                    self.table.blockSignals(True) # Prevent edit triggers during reload
+                    self.load_versions()
+                    self.table.blockSignals(False)
+                else:
+                    QMessageBox.warning(self, "Failed", msg)
 
     def _handle_version_edit(self, item):
         """Handle inline edits in version table and update database."""
@@ -114,13 +160,6 @@ class VersionsDialog(QDialog):
 
         except Exception as e:
             QMessageBox.warning(self, "Edit Error", f"Failed to update version: {e}")
-
-
-        # Close button
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(self.reject)
-        #layout.addWidget(btns)
-
 
 # ---------------------- Main Products UI ----------------------
 class ProductsUI(QWidget):
@@ -267,7 +306,7 @@ class ProductsUI(QWidget):
                 return  # Skip non-editable columns (like Product ID or Stock)
 
             update_product_field(product_id, field_map[col], new_value)
-            item.setBackground(Qt.yellow)  # Optional visual feedback
+            #item.setBackground(Qt.white)  # Optional visual feedback
 
         except Exception as e:
             QMessageBox.warning(self, "Edit Error", f"Failed to update product: {e}")
@@ -286,6 +325,13 @@ class ProductsUI(QWidget):
         self.search_input = QLineEdit(placeholderText="Search by name, code, or category...")
         self.search_input.returnPressed.connect(self.load_products_table)
 
+        # --- NEW: Low Stock Filter Checkbox ---
+        from PyQt5.QtWidgets import QCheckBox  # Ensure this is imported
+        self.low_stock_filter = QCheckBox("Low Stock")
+        self.low_stock_filter.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.low_stock_filter.toggled.connect(self.load_products_table)
+        # --------------------------------------
+
         search_btn = QPushButton("🔍 Search")
         search_btn.clicked.connect(self.load_products_table)
 
@@ -297,6 +343,7 @@ class ProductsUI(QWidget):
         self.edit_mode_btn.toggled.connect(self._toggle_edit_mode)
 
         search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.low_stock_filter) # Add checkbox to layout
         search_layout.addWidget(search_btn)
         search_layout.addWidget(refresh_btn)
         search_layout.addWidget(self.edit_mode_btn)
@@ -318,6 +365,11 @@ class ProductsUI(QWidget):
         self.products_table.itemChanged.connect(self._handle_product_edit)
         self.products_table.cellDoubleClicked.connect(self.on_product_double_click)
         
+        # --- NEW: Enable Right-Click Context Menu ---
+        self.products_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.products_table.customContextMenuRequested.connect(self._open_context_menu)
+        # ---------------------------------------------
+
         table_layout.addWidget(self.products_table)
         layout.addWidget(table_group)
 
@@ -349,7 +401,7 @@ class ProductsUI(QWidget):
         self.new_code = QLineEdit(placeholderText="Optional unique product code")
         self.new_name = QLineEdit()
         self.new_category = QLineEdit()
-        self.new_pieces = QSpinBox(minimum=1, value=1)
+        self.new_pieces = QSpinBox(minimum=1, value=1, maximum=10000)
 
         btn_add_product = QPushButton("✅ Create Product")
         btn_add_product.clicked.connect(self._handle_add_product)
@@ -374,7 +426,7 @@ class ProductsUI(QWidget):
         self.version_unit_selling = QLineEdit(placeholderText="0.00")
         self.version_box_cost = QLineEdit(placeholderText="0.00")
         self.version_box_selling = QLineEdit(placeholderText="0.00")
-        self.version_stock_boxes = QSpinBox(minimum=0, value=0)
+        self.version_stock_boxes = QSpinBox(minimum=0, maximum=10000, value=0)
 
         btn_add_version = QPushButton("➕ Add Version")
         btn_add_version.clicked.connect(self._handle_add_version)
@@ -567,41 +619,72 @@ class ProductsUI(QWidget):
 
     # ---------------- Handlers ----------------
     def load_products_table(self):
-        """Load and display products in the table (with search filter)."""
+        """Load and display products with Search AND Low Stock Filter."""
+        
+        # 1. Get User Inputs
         query = self.search_input.text().strip().lower()
-        rows = fetch_all_products()
+        show_low_stock_only = self.low_stock_filter.isChecked() # Get Checkbox State
 
-        if query:
-            rows = [
-                r for r in rows
-                if query in str(r[1]).lower()
-                or query in str(r[2]).lower()
-                or query in str(r[3]).lower()
-            ]
+        # 2. Fetch Data
+        all_rows = fetch_all_products()
+        filtered_rows = []
 
-        self.products_table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
+        # 3. Process Logic (Filter & Search)
+        for row in all_rows:
             product_id, product_code, product_name, category, pieces = row
-            total_stock = get_product_stock(product_id)
-            cells = [product_id, product_code, product_name, category, pieces, total_stock]
+            
+            # Fetch Stock
+            stock_raw = get_product_stock(product_id)
+            try:
+                stock_val = float(stock_raw) if stock_raw is not None and str(stock_raw) != "" else 0.0
+            except ValueError:
+                stock_val = 0.0
 
+            # --- FILTER 1: Low Stock Checkbox ---
+            if show_low_stock_only and stock_val >= 20:
+                continue # Skip this row if we only want low stock and this one is healthy
+
+            # --- FILTER 2: Text Search ---
+            if query:
+                # Check if query matches Name, Code, or Category
+                match = (query in str(product_code).lower() or 
+                         query in str(product_name).lower() or 
+                         query in str(category).lower())
+                if not match:
+                    continue # Skip if search text doesn't match
+
+            # If it passes both filters, keep it
+            filtered_rows.append((row, stock_val))
+
+
+        # 4. Populate Table
+        self.products_table.setRowCount(len(filtered_rows))
+        self.products_table.setSortingEnabled(False) # Disable sorting while inserting to prevent glitches
+
+        for i, (row_data, stock_val) in enumerate(filtered_rows):
+            product_id, product_code, product_name, category, pieces = row_data
+            
+            # Prepare cell values
+            cells = [product_id, product_code, product_name, category, pieces, stock_val]
+
+            # Determine if this specific row is low stock
+            is_low_stock = stock_val < 20
+
+            # Loop through ALL 6 columns
             for j, val in enumerate(cells):
                 item = QTableWidgetItem("" if val is None else str(val))
                 item.setTextAlignment(Qt.AlignCenter)
                 
-                # Color code stock levels
-                if j == 5 and val is not None and val != "":
-                    try:
-                        stock_val = float(val)
-                        if stock_val == 0:
-                            item.setBackground(Qt.red)
-                            item.setForeground(Qt.white)
-                        elif stock_val < 10:
-                            item.setBackground(Qt.yellow)
-                    except ValueError:
-                        pass
-                        
+                # --- COLORING LOGIC ---
+                # Apply to EVERY cell (j=0 to j=5)
+                if is_low_stock:
+                    item.setBackground(Qt.red)
+                    item.setForeground(Qt.white)
+                # ----------------------
+
                 self.products_table.setItem(i, j, item)
+
+        self.products_table.setSortingEnabled(True) # Re-enable sorting
 
     def on_product_double_click(self, row, col):
         """Open versions dialog when a product row is double-clicked."""
@@ -740,3 +823,45 @@ class ProductsUI(QWidget):
             self._refresh_product_dropdown()
         elif idx == 2:
             self._fill_supplier_product_dropdown()
+
+    def _open_context_menu(self, position):
+        """Handle Right-Click on the Table."""
+        from Backend_Logic.Products_n_Stocks import delete_product_safely  # Import here or at top
+
+        # 1. Get the item under the mouse click
+        item = self.products_table.itemAt(position)
+        
+        # If user clicked empty space, do nothing
+        if item is None:
+            return
+
+        row = item.row()
+        
+        # 2. Get Product Data from the row
+        # (Assuming Column 0 = ID, Column 2 = Name based on your previous code)
+        product_id = self.products_table.item(row, 0).text()
+        product_name = self.products_table.item(row, 2).text()
+
+        # 3. Create the Menu
+        menu = QMenu()
+        delete_action = menu.addAction(f"❌ Delete '{product_name}'")
+        
+        # 4. Show the Menu and capture the action
+        # mapToGlobal converts the table coordinates to screen coordinates
+        action = menu.exec_(self.products_table.mapToGlobal(position))
+
+        # 5. Handle the click
+        if action == delete_action:
+            confirm = QMessageBox.question(
+                self, "Confirm Delete",
+                f"Are you sure you want to delete '{product_name}'?\nThis cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if confirm == QMessageBox.Yes:
+                success, msg = delete_product_safely(product_id)
+                if success:
+                    QMessageBox.information(self, "Success", msg)
+                    self.load_products_table() # Refresh the list
+                else:
+                    QMessageBox.warning(self, "Failed", msg)

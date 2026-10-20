@@ -14,8 +14,7 @@ from Backend_Logic.Products_n_Stocks import (
     list_product_versions
 )
 from Backend_Logic.Reporting import get_remaining_stock, get_sales_summary, generate_report
-from Backend_Logic.Credit_Customers import fetch_all_credit_customers, mark_credit_as_paid, get_customer_credit_history
-
+from Backend_Logic.Credit_Customers import fetch_all_credit_customers, process_credit_payment
 
 DB_NAME = "POS.db"
 

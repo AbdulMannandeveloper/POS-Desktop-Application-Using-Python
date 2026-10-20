@@ -1,16 +1,25 @@
 import sqlite3
+import os
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QMessageBox, QTableWidget, QTableWidgetItem,
-    QDialog, QComboBox, QDateEdit, QGroupBox
+    QDialog, QComboBox, QDateEdit, QGroupBox, QHeaderView, QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QDate
-from PyQt5.QtGui import QColor, QFont
-from PyQt5.QtWidgets import QHeaderView
+from PyQt5.QtGui import QColor
+from Backend_Logic.Sales import create_receipt as generate_sale_receipt
 
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
 
 DB_NAME = "POS.db"
 
+# ==========================================
+#  REPORTING UI CLASS
+# ==========================================
 
 class ReportingUI(QWidget):
     def __init__(self, submodule=None, parent=None):
@@ -18,62 +27,26 @@ class ReportingUI(QWidget):
         self.seller_colors = {}
         
         self.setStyleSheet("""
-            QWidget {
-                font-family: Segoe UI, Arial;
-            }
-            QLabel {
-                font-size: 10pt;
-                color: #2c3e50;
-            }
+            QWidget { font-family: Segoe UI, Arial; }
+            QLabel { font-size: 10pt; color: #2c3e50; }
             QPushButton {
-                font-size: 10pt;
-                padding: 8px 12px;
-                border: none;
-                border-radius: 4px;
-                background-color: #3498db;
-                color: white;
-                font-weight: bold;
+                font-size: 10pt; padding: 8px 12px; border: none;
+                border-radius: 4px; background-color: #3498db; color: white; font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-            QPushButton:pressed {
-                background-color: #21618c;
-            }
+            QPushButton:hover { background-color: #2980b9; }
             QTableWidget {
-                font-size: 9pt;
-                border: 1px solid #bdc3c7;
-                border-radius: 4px;
-                background-color: white;
-                gridline-color: #ecf0f1;
+                font-size: 9pt; border: 1px solid #bdc3c7;
+                border-radius: 4px; background-color: white; gridline-color: #ecf0f1;
             }
             QHeaderView::section {
-                background-color: #34495e;
-                color: white;
-                padding: 6px;
-                font-weight: bold;
-                border: none;
+                background-color: #34495e; color: white; padding: 6px; font-weight: bold; border: none;
             }
             QGroupBox {
-                font-weight: bold;
-                font-size: 11pt;
-                border: 1px solid #bdc3c7;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 10px;
+                font-weight: bold; font-size: 11pt; border: 1px solid #bdc3c7;
+                border-radius: 6px; margin-top: 10px; padding-top: 10px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: #2c3e50;
-            }
-            QComboBox, QDateEdit {
-                padding: 6px;
-                border: 1px solid #bdc3c7;
-                border-radius: 4px;
-                background-color: white;
-            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #2c3e50; }
+            QComboBox, QDateEdit { padding: 6px; border: 1px solid #bdc3c7; border-radius: 4px; background-color: white; }
         """)
 
         main_layout = QVBoxLayout(self)
@@ -83,15 +56,7 @@ class ReportingUI(QWidget):
         # Title
         title = QLabel("📊 Sales Reporting & Analytics")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("""
-            font-size: 22px; 
-            font-weight: bold; 
-            color: #2c3e50;
-            padding: 10px;
-            background-color: #ecf0f1;
-            border-radius: 6px;
-            margin-bottom: 10px;
-        """)
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50; padding: 10px; background-color: #ecf0f1; border-radius: 6px;")
         main_layout.addWidget(title)
 
         # ---- Filters Group ----
@@ -101,7 +66,6 @@ class ReportingUI(QWidget):
 
         # Seller filter
         seller_container = QVBoxLayout()
-        seller_container.setSpacing(5)
         seller_container.addWidget(QLabel("Seller:"))
         self.seller_filter = QComboBox()
         self.seller_filter.addItem("All Sellers")
@@ -111,13 +75,12 @@ class ReportingUI(QWidget):
 
         # Date filters
         date_container = QVBoxLayout()
-        date_container.setSpacing(5)
         date_container.addWidget(QLabel("Date Range:"))
-        
         date_range_layout = QHBoxLayout()
+        
         self.start_date = QDateEdit()
         self.start_date.setCalendarPopup(True)
-        self.start_date.setDate(QDate.currentDate().addMonths(-1))
+        self.start_date.setDate(QDate.currentDate().addMonths(-1)) 
         self.start_date.setMaximumDate(QDate.currentDate())
         
         self.end_date = QDateEdit()
@@ -139,92 +102,85 @@ class ReportingUI(QWidget):
 
         main_layout.addWidget(filters_group)
 
-        # ---- Actions Group ----
-        actions_group = QGroupBox("Report Actions")
-        actions_layout = QHBoxLayout(actions_group)
+        # ---- Top Stats Group ----
+        stats_group = QGroupBox("Period Summary")
+        stats_layout = QHBoxLayout(stats_group)
+
+        # Revenue & Profit Labels
+        self.total_revenue_label = QLabel("Total Revenue: 0.00")
+        self.total_revenue_label.setStyleSheet("font-weight: bold; font-size: 14pt; color: #2980b9; background-color: #eaf2f8; padding: 10px; border-radius: 4px; border: 1px solid #a9cce3;")
         
-        # Report buttons
-        btn_report = QPushButton("📄 Generate Sales Report")
-        btn_report.setStyleSheet("background-color: #9b59b6;")
+        self.total_profit_label = QLabel("Total Profit: 0.00")
+        self.total_profit_label.setStyleSheet("font-weight: bold; font-size: 14pt; color: #27ae60; background-color: #e8f6f3; padding: 10px; border-radius: 4px; border: 1px solid #a3e4d7;")
+
+        stats_layout.addWidget(self.total_revenue_label)
+        stats_layout.addWidget(self.total_profit_label)
+        stats_layout.addStretch()
+        
+        # Reports Buttons
+        btn_report = QPushButton("📄 Sales PDF")
         btn_report.clicked.connect(self._generate_report)
-
-        btn_stock_report = QPushButton("📦 Stock Purchase Report")
-        btn_stock_report.setStyleSheet("background-color: #e67e22;")
+        
+        btn_stock_report = QPushButton("📦 Stock PDF")
         btn_stock_report.clicked.connect(self._generate_stock_report)
+        
+        # NEW: Receipt Button
+        btn_receipt = QPushButton("🖨️ Print Receipt")
+        btn_receipt.setStyleSheet("background-color: #8e44ad; color: white;") # Purple to distinguish
+        btn_receipt.clicked.connect(self._print_selected_receipt)
 
-        # Total label
-        self.total_label = QLabel("Total Sales: 0.00")
-        self.total_label.setAlignment(Qt.AlignRight)
-        self.total_label.setStyleSheet("""
-            font-weight: bold; 
-            font-size: 12pt; 
-            color: #27ae60;
-            background-color: #e8f6f3;
-            padding: 8px 12px;
-            border-radius: 4px;
-        """)
+        stats_layout.addWidget(btn_report)
+        stats_layout.addWidget(btn_stock_report)
+        stats_layout.addWidget(btn_receipt)
 
-        actions_layout.addWidget(btn_report)
-        actions_layout.addWidget(btn_stock_report)
-        actions_layout.addWidget(self.total_label)
-
-        main_layout.addWidget(actions_group)
+        main_layout.addWidget(stats_group)
 
         # ---- Sales Table Group ----
         table_group = QGroupBox("Sales Data")
         table_layout = QVBoxLayout(table_group)
         
         self.sales_table = QTableWidget()
-        self.sales_table.setColumnCount(4)
-        self.sales_table.setHorizontalHeaderLabels(["Sale ID", "Date", "Net Amount", "Seller"])
+        self.sales_table.setColumnCount(5) 
+        self.sales_table.setHorizontalHeaderLabels(["Sale ID", "Date", "Net Amount", "Total Profit", "Seller"])
         self.sales_table.cellDoubleClicked.connect(self._show_sale_items)
         
-        # Set fixed column sizing to prevent shrinking
         header = self.sales_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Sale ID - auto size
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Date - auto size
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Net Amount - auto size
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Seller - stretch to fill space
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
         
         self.sales_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.sales_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.sales_table.setSelectionMode(QAbstractItemView.SingleSelection) # Only one row at a time
         self.sales_table.setAlternatingRowColors(True)
-        self.sales_table.setMinimumHeight(400)
-
+        
         table_layout.addWidget(self.sales_table)
         main_layout.addWidget(table_group)
 
         self._load_sales()
 
     def _load_seller_filter(self):
-        """Populate seller dropdown with all users regardless of role."""
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT user_id, username, role FROM Users ORDER BY username")
         sellers = cur.fetchall()
         conn.close()
         
-        # Store seller info for color coding
         self.seller_info = {}
         for user_id, username, role in sellers:
             self.seller_filter.addItem(username)
             self.seller_info[username] = {'user_id': user_id, 'role': role}
 
     def _get_seller_color(self, username):
-        """Get consistent color for each seller based on their username."""
         if username not in self.seller_colors:
-            # Generate a consistent color based on username hash
             import hashlib
             color_hash = hashlib.md5(username.encode()).hexdigest()[:6]
-            # Convert to HSV for better color distribution
             hue = int(color_hash[:2], 16) % 360
-            saturation = 150 + (int(color_hash[2:4], 16) % 50)  # 150-200
-            value = 200 + (int(color_hash[4:6], 16) % 55)  # 200-255
+            saturation = 100 + (int(color_hash[2:4], 16) % 50)
+            value = 220 + (int(color_hash[4:6], 16) % 35)
             self.seller_colors[username] = QColor.fromHsv(hue, saturation, value)
         return self.seller_colors[username]
 
     def _load_sales(self):
-        """Load sales filtered by seller and date range, sorted by seller name."""
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
 
@@ -233,9 +189,11 @@ class ReportingUI(QWidget):
         end = self.end_date.date().toString("yyyy-MM-dd")
 
         query = """
-            SELECT s.sale_id, s.sale_date, s.net_amount, u.username AS salesperson
+            SELECT s.sale_id, s.sale_date, s.net_amount, u.username, 
+                   COALESCE(SUM(si.profit), 0) as sale_profit
             FROM Sales s
             JOIN Users u ON s.user_id = u.user_id
+            LEFT JOIN Sale_Items si ON s.sale_id = si.sale_id
             WHERE date(s.sale_date) BETWEEN ? AND ?
         """
         params = [start, end]
@@ -244,58 +202,101 @@ class ReportingUI(QWidget):
             query += " AND u.username = ?"
             params.append(seller)
 
-        # Sort by seller name first, then by sale date (newest first for each seller)
-        query += " ORDER BY u.username ASC, s.sale_date DESC"
+        query += " GROUP BY s.sale_id ORDER BY s.sale_date DESC"
 
         cur.execute(query, tuple(params))
         rows = cur.fetchall()
         conn.close()
 
         self.sales_table.setRowCount(len(rows))
-        total_sales = 0.0
+        
+        grand_total_revenue = 0.0
+        grand_total_profit = 0.0
 
-        for r, (sale_id, date, net, username) in enumerate(rows):
-            total_sales += net
+        for r, (sale_id, date, net, username, profit) in enumerate(rows):
+            grand_total_revenue += net
+            grand_total_profit += profit
+
             items = [
                 QTableWidgetItem(str(sale_id)),
                 QTableWidgetItem(date),
-                QTableWidgetItem(f"{net:,.2f}"),  # Format with commas
+                QTableWidgetItem(f"{net:,.2f}"),
+                QTableWidgetItem(f"{profit:,.2f}"),
                 QTableWidgetItem(username),
             ]
             
+            seller_color = self._get_seller_color(username)
+
             for c, item in enumerate(items):
-                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                if c == 2:  # Amount column - right align
+                item.setBackground(seller_color)
+                if c in [2, 3]: 
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if c == 3:
+                        item.setForeground(QColor("#1e8449") if profit > 0 else QColor("#c0392b"))
+                
                 self.sales_table.setItem(r, c, item)
 
-            # Color coding by seller - each seller gets unique color
-            seller_color = self._get_seller_color(username)
-            for c in range(4):
-                self.sales_table.item(r, c).setBackground(seller_color.lighter(160))
-                # Set text color for better contrast on light backgrounds
-                self.sales_table.item(r, c).setForeground(QColor("#2c3e50"))
-
-        self.total_label.setText(f"Total Sales: {total_sales:,.2f}")
+        self.total_revenue_label.setText(f"Total Revenue: {grand_total_revenue:,.2f}")
+        self.total_profit_label.setText(f"Total Profit: {grand_total_profit:,.2f}")
         
-        # Ensure columns maintain proper width
         self.sales_table.resizeColumnsToContents()
+
+    # ==========================================
+    #  NEW: RECEIPT PRINTING HANDLER
+    # ==========================================
+    def _print_selected_receipt(self):
+        """Gets selected row, fetches customer name, and generates receipt."""
+        selected_rows = self.sales_table.selectionModel().selectedRows()
         
-        # Set minimum widths to prevent excessive shrinking
-        self.sales_table.setColumnWidth(0, 80)   # Sale ID
-        self.sales_table.setColumnWidth(1, 120)  # Date
-        self.sales_table.setColumnWidth(2, 120)  # Net Amount
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select a sale transaction from the table first.")
+            return
+
+        # Get Sale ID from the first column of the selected row
+        row_index = selected_rows[0].row()
+        sale_id = self.sales_table.item(row_index, 0).text()
+
+        # We need to fetch the Customer Name specifically for this receipt
+        # (It's not in the main table to keep the UI clean)
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT c.customer_name 
+                FROM Sales s
+                LEFT JOIN Customers c ON s.customer_id = c.customer_id
+                WHERE s.sale_id = ?
+            """, (sale_id,))
+            result = cur.fetchone()
+            conn.close()
+            
+            # If result is None or name is None, default to "Walk-in"
+            customer_name = result[0] if result and result[0] else "Walk-in Customer"
+
+            # Generate filename with timestamp to avoid overwriting
+            filename = f"receipt_{sale_id}.pdf"
+            
+            # Call the function we imported/defined above
+            success = generate_sale_receipt(sale_id, filename, customer_name)
+            
+            if success:
+                QMessageBox.information(self, "Receipt Generated", f"✅ Receipt saved as:\n{filename}")
+                # Optional: Automatically open the file
+                # import os
+                # os.startfile(filename) 
+            else:
+                QMessageBox.warning(self, "Error", "Could not generate receipt.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Database error while fetching receipt details:\n{e}")
 
     def _show_sale_items(self, row, col):
-        """Popup with sale items when a sale is clicked."""
         sale_id = self.sales_table.item(row, 0).text()
-        sale_date = self.sales_table.item(row, 1).text()
-        seller = self.sales_table.item(row, 3).text()
-
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         cur.execute("""
-            SELECT p.product_name, si.quantity_boxes, si.unit_price, si.total_price
+            SELECT p.product_name, si.quantity_boxes, 
+                   si.unit_cost, si.unit_price, si.profit
             FROM Sale_Items si
             JOIN Products p ON si.product_id = p.product_id
             WHERE si.sale_id=?
@@ -303,352 +304,245 @@ class ReportingUI(QWidget):
         rows = cur.fetchall()
         conn.close()
 
-        if not rows:
-            QMessageBox.information(self, "No Items", "No items found for this sale.")
-            return
+        if not rows: return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Sale Details - #{sale_id}")
-        dialog.setMinimumSize(600, 400)
+        dialog.setWindowTitle(f"Profit Analysis - Sale #{sale_id}")
+        dialog.setMinimumSize(700, 400)
         layout = QVBoxLayout(dialog)
 
-        # Header info
-        header_info = QLabel(f"Sale #{sale_id} • {sale_date} • {seller}")
-        header_info.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 8px;")
-        layout.addWidget(header_info)
-
         table = QTableWidget()
-        table.setColumnCount(4)
-        table.setHorizontalHeaderLabels(["Product", "Qty (Boxes)", "Unit Price", "Total"])
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["Product", "Qty", "Box Cost", "Box Sold At", "Total Profit"])
         table.setRowCount(len(rows))
         
-        # Set proper column resizing for items table
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Product name stretches
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Qty
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Unit Price
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Total
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(True)
+        total_sale_profit = 0.0
 
-        total_sale_amount = 0.0
-        for r, (name, qty, price, total) in enumerate(rows):
+        for r, (name, qty, cost, price, profit) in enumerate(rows):
+            total_sale_profit += profit
             table.setItem(r, 0, QTableWidgetItem(name))
             table.setItem(r, 1, QTableWidgetItem(str(qty)))
-            table.setItem(r, 2, QTableWidgetItem(f"{price:.2f}"))
-            table.setItem(r, 3, QTableWidgetItem(f"{total:.2f}"))
-            total_sale_amount += total
+            table.setItem(r, 2, QTableWidgetItem(f"{cost:,.2f}"))
+            table.setItem(r, 3, QTableWidgetItem(f"{price:,.2f}"))
+            
+            profit_item = QTableWidgetItem(f"{profit:,.2f}")
+            profit_item.setForeground(QColor("green") if profit >= 0 else QColor("red"))
+            table.setItem(r, 4, profit_item)
 
         layout.addWidget(table)
-
-        # Footer with total
-        footer = QLabel(f"Sale Total: {total_sale_amount:,.2f}")
-        footer.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 8px; background-color: #e8f6f3;")
-        footer.setAlignment(Qt.AlignRight)
-        layout.addWidget(footer)
+        
+        footer_lbl = QLabel(f"Total Profit for this Sale: {total_sale_profit:,.2f}")
+        footer_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; color: green; margin-top: 10px;")
+        footer_lbl.setAlignment(Qt.AlignRight)
+        layout.addWidget(footer_lbl)
 
         dialog.exec_()
 
     def _ask_date_range(self):
-        """Popup dialog to ask for start and end date before generating report."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Select Date Range for Report")
-        dialog.setMinimumWidth(400)
+        dialog.setWindowTitle("Select Date Range")
         layout = QVBoxLayout(dialog)
-
-        # Date inputs
-        form_layout = QVBoxLayout()
         
-        start_container = QHBoxLayout()
-        start_container.addWidget(QLabel("Start Date:"))
         start = QDateEdit()
         start.setCalendarPopup(True)
         start.setDate(QDate.currentDate().addMonths(-1))
-        start.setMaximumDate(QDate.currentDate())
-        start_container.addWidget(start)
-        form_layout.addLayout(start_container)
-
-        end_container = QHBoxLayout()
-        end_container.addWidget(QLabel("End Date:"))
+        
         end = QDateEdit()
         end.setCalendarPopup(True)
         end.setDate(QDate.currentDate())
-        end.setMaximumDate(QDate.currentDate())
-        end_container.addWidget(end)
-        form_layout.addLayout(end_container)
-
-        layout.addLayout(form_layout)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_ok = QPushButton("📊 Generate Report")
-        btn_ok.setStyleSheet("background-color: #27ae60;")
-        btn_ok.clicked.connect(dialog.accept)
         
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.setStyleSheet("background-color: #95a5a6;")
-        btn_cancel.clicked.connect(dialog.reject)
-
-        btn_layout.addWidget(btn_ok)
-        btn_layout.addWidget(btn_cancel)
-        layout.addLayout(btn_layout)
-
+        layout.addWidget(QLabel("Start Date:"))
+        layout.addWidget(start)
+        layout.addWidget(QLabel("End Date:"))
+        layout.addWidget(end)
+        
+        btn = QPushButton("Generate")
+        btn.clicked.connect(dialog.accept)
+        layout.addWidget(btn)
+        
         if dialog.exec_() == QDialog.Accepted:
             return start.date().toString("yyyy-MM-dd"), end.date().toString("yyyy-MM-dd")
         return None, None
 
+    def _fetch_filtered_sales_rows(self):
+        seller = self.seller_filter.currentText()
+        start = self.start_date.date().toString("yyyy-MM-dd")
+        end = self.end_date.date().toString("yyyy-MM-dd")
+
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+
+        query = """
+            SELECT s.sale_id, s.sale_date, s.net_amount, u.username,
+                   COALESCE(SUM(si.profit), 0) as sale_profit
+            FROM Sales s
+            JOIN Users u ON s.user_id = u.user_id
+            LEFT JOIN Sale_Items si ON s.sale_id = si.sale_id
+            WHERE date(s.sale_date) BETWEEN ? AND ?
+        """
+        params = [start, end]
+
+        if seller != "All Sellers":
+            query += " AND u.username = ?"
+            params.append(seller)
+
+        query += " GROUP BY s.sale_id ORDER BY s.sale_date DESC"
+
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        conn.close()
+
+        return rows
+
     def _generate_report(self):
-        """Generate Sales Report (PDF) including product-wise summary."""
-        start, end = self._ask_date_range()
-        if not start or not end:
+        start_qdate = self.start_date.date()
+        end_qdate = self.end_date.date()
+
+        if start_qdate > end_qdate:
+            QMessageBox.warning(self, "Invalid Date Range", "Start date cannot be after end date.")
             return
 
+        rows = self._fetch_filtered_sales_rows()
+        if not rows:
+            QMessageBox.warning(self, "No Data", "No sales found for the selected filters/date range.")
+            return
+
+        start = start_qdate.toString("yyyy-MM-dd")
+        end = end_qdate.toString("yyyy-MM-dd")
         seller = self.seller_filter.currentText()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Sales_Report_{start}_to_{end}_{timestamp}.pdf"
 
         try:
-            conn = sqlite3.connect(DB_NAME)
-            cur = conn.cursor()
+            doc = SimpleDocTemplate(filename, pagesize=A4, leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
+            styles = getSampleStyleSheet()
+            title_style = styles["Title"]
+            normal = styles["Normal"]
 
-            # --- Fetch Sale Records ---
-            query = """
-                SELECT s.sale_id, s.sale_date, s.net_amount, u.username AS salesperson
-                FROM Sales s
-                JOIN Users u ON s.user_id = u.user_id
-                WHERE date(s.sale_date) BETWEEN ? AND ?
-            """
-            params = [start, end]
+            total_revenue = sum(float(r[2] or 0) for r in rows)
+            total_profit = sum(float(r[4] or 0) for r in rows)
 
-            if seller != "All Sellers":
-                query += " AND u.username = ?"
-                params.append(seller)
+            elements = [
+                Paragraph("Sales Performance Report", title_style),
+                Spacer(1, 8),
+                Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal),
+                Paragraph(f"Date Range: {start} to {end}", normal),
+                Paragraph(f"Seller Filter: {seller}", normal),
+                Paragraph(f"Total Bills: {len(rows)}", normal),
+                Paragraph(f"Total Revenue: {total_revenue:,.2f}", normal),
+                Paragraph(f"Total Profit: {total_profit:,.2f}", normal),
+                Spacer(1, 12),
+            ]
 
-            query += " ORDER BY s.sale_date DESC"
-            cur.execute(query, tuple(params))
-            sales_rows = cur.fetchall()
+            table_data = [["Sale ID", "Date", "Net Amount", "Profit", "Seller"]]
+            for sale_id, sale_date, net_amount, username, profit in rows:
+                table_data.append([
+                    str(sale_id),
+                    str(sale_date),
+                    f"{float(net_amount or 0):,.2f}",
+                    f"{float(profit or 0):,.2f}",
+                    str(username),
+                ])
 
-            if not sales_rows:
-                QMessageBox.information(self, "No Data",
-                                        f"No sales found for {seller} from {start} → {end}.")
-                conn.close()
-                return
+            table = Table(table_data, colWidths=[60, 150, 100, 90, 120], repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (0, 0), (1, -1), "CENTER"),
+                ("ALIGN", (2, 1), (3, -1), "RIGHT"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+            ]))
 
-            # --- Fetch Product Summary ---
-            product_query = """
-                SELECT p.product_name, SUM(si.quantity_boxes) AS total_qty, SUM(si.total_price) AS total_value
-                FROM Sale_Items si
-                JOIN Products p ON si.product_id = p.product_id
-                JOIN Sales s ON si.sale_id = s.sale_id
-                JOIN Users u ON s.user_id = u.user_id
-                WHERE date(s.sale_date) BETWEEN ? AND ?
-            """
-            prod_params = [start, end]
+            elements.append(table)
+            doc.build(elements)
 
-            if seller != "All Sellers":
-                product_query += " AND u.username = ?"
-                prod_params.append(seller)
-
-            product_query += " GROUP BY p.product_name ORDER BY total_qty DESC"
-            cur.execute(product_query, tuple(prod_params))
-            product_rows = cur.fetchall()
-            conn.close()
-
-            # --- Generate PDF ---
-            from reportlab.lib.pagesizes import A4
-            from reportlab.pdfgen import canvas
-
-            filename = f"sales_report_{seller.replace(' ', '_')}_{start}_to_{end}.pdf"
-            c = canvas.Canvas(filename, pagesize=A4)
-            width, height = A4
-            y = height - 40
-
-            # ---- Header ----
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(220, y, "Sales Report")
-            y -= 25
-            c.setFont("Helvetica", 10)
-            c.drawString(50, y, f"Date Range: {start} → {end}")
-            y -= 15
-            c.drawString(50, y, f"Seller: {seller}" if seller != "All Sellers" else "Seller: All")
-            y -= 15
-            c.drawString(50, y, f"Generated by POS System")
-            y -= 20
-            c.line(50, y, width - 50, y)
-            y -= 20
-
-            # ---- Sales Table ----
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(50, y, "Sale ID")
-            c.drawString(110, y, "Date")
-            c.drawString(220, y, "Seller")
-            c.drawString(340, y, "Net Amount")
-            y -= 15
-            c.line(50, y, width - 50, y)
-            y -= 10
-
-            c.setFont("Helvetica", 9)
-            total_sales = 0.0
-            for sale_id, date, net, username in sales_rows:
-                c.drawString(50, y, str(sale_id))
-                c.drawString(110, y, date)
-                c.drawString(220, y, username[:15])
-                c.drawRightString(420, y, f"{net:.2f}")
-                y -= 12
-                total_sales += net
-                if y < 100:
-                    c.showPage()
-                    c.setFont("Helvetica", 9)
-                    y = height - 60
-
-            # ---- Total ----
-            y -= 10
-            c.line(50, y, width - 50, y)
-            y -= 15
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Total Sales: {total_sales:.2f}")
-            y -= 25
-
-            # ---- Product Summary ----
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(50, y, "Product Summary")
-            y -= 15
-            c.line(50, y, width - 50, y)
-            y -= 20
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(50, y, "Product Name")
-            c.drawString(250, y, "Total Qty")
-            c.drawString(340, y, "Total Value")
-            y -= 15
-            c.line(50, y, width - 50, y)
-            y -= 10
-
-            c.setFont("Helvetica", 9)
-            total_qty_all = 0
-            total_value_all = 0.0
-            for name, qty, value in product_rows:
-                c.drawString(50, y, name[:28])
-                c.drawRightString(290, y, str(int(qty)))
-                c.drawRightString(420, y, f"{value:.2f}")
-                y -= 12
-                total_qty_all += qty
-                total_value_all += value
-
-                if y < 80:
-                    c.showPage()
-                    y = height - 60
-                    c.setFont("Helvetica", 9)
-
-            # ---- Product Totals ----
-            y -= 10
-            c.line(50, y, width - 50, y)
-            y -= 15
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Total Products Sold: {int(total_qty_all)}")
-            c.drawRightString(420, y, f"Total Value: {total_value_all:.2f}")
-
-            # ---- Save File ----
-            c.save()
-            QMessageBox.information(
-                self,
-                "Report Generated",
-                f"✅ Sales Report with Product Summary saved as {filename}"
-            )
-
+            QMessageBox.information(self, "Report Generated", f"✅ Sales report generated successfully.\n\nFile: {filename}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate sales report:\n{e}")
+            QMessageBox.critical(self, "Report Error", f"Failed to generate sales report:\n{e}")
 
     def _generate_stock_report(self):
-        """Generate a Stock Purchase Report (PDF) after asking date range."""
-        start, end = self._ask_date_range()
-        if not start or not end:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                p.product_id,
+                p.product_name,
+                COALESCE(p.product_code, ''),
+                COALESCE(SUM(v.current_stock_boxes), 0) AS total_stock,
+                COALESCE(MAX(v.box_cost_price), 0) AS latest_cost,
+                COALESCE(MAX(v.box_selling_price), 0) AS latest_selling
+            FROM Products p
+            LEFT JOIN Product_Versions v ON v.product_id = p.product_id
+            GROUP BY p.product_id, p.product_name, p.product_code
+            ORDER BY p.product_name COLLATE NOCASE
+        """
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        if not rows:
+            QMessageBox.warning(self, "No Data", "No products/stock records found.")
             return
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Stock_Report_{timestamp}.pdf"
+
         try:
-            conn = sqlite3.connect(DB_NAME)
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT p.product_name, sp.quantity_added, sp.purchase_price, 
-                    sp.purchase_date, sp.supplier_name, sp.notes,
-                    pv.current_stock_boxes
-                FROM StockPurchases sp
-                JOIN Products p ON sp.product_id = p.product_id
-                JOIN Product_Versions pv ON sp.version_id = pv.version_id
-                WHERE date(sp.purchase_date) BETWEEN ? AND ?
-                ORDER BY sp.purchase_date DESC
-            """, (start, end))
-            rows = cur.fetchall()
-            conn.close()
+            doc = SimpleDocTemplate(filename, pagesize=A4, leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
+            styles = getSampleStyleSheet()
+            elements = [
+                Paragraph("Current Stock Report", styles["Title"]),
+                Spacer(1, 8),
+                Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]),
+                Paragraph(f"Total Products: {len(rows)}", styles["Normal"]),
+                Spacer(1, 12),
+            ]
 
-            if not rows:
-                QMessageBox.information(self, "No Data", f"No stock purchases found from {start} → {end}.")
-                return
+            table_data = [["Product ID", "Code", "Product", "Stock (Boxes)", "Cost", "Selling", "Status"]]
+            for product_id, name, code, stock, cost, selling in rows:
+                status = "LOW" if float(stock or 0) < 20 else "OK"
+                table_data.append([
+                    str(product_id),
+                    str(code),
+                    str(name),
+                    f"{float(stock or 0):,.0f}",
+                    f"{float(cost or 0):,.2f}",
+                    f"{float(selling or 0):,.2f}",
+                    status,
+                ])
 
-            from reportlab.lib.pagesizes import A4
-            from reportlab.pdfgen import canvas
+            table = Table(table_data, colWidths=[55, 70, 165, 75, 65, 65, 45], repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("ALIGN", (0, 0), (1, -1), "CENTER"),
+                ("ALIGN", (3, 1), (5, -1), "RIGHT"),
+                ("ALIGN", (6, 1), (6, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+            ]))
 
-            filename = "stock_purchase_report.pdf"
-            c = canvas.Canvas(filename, pagesize=A4)
-            width, height = A4
-            y = height - 40
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(200, y, "Stock Purchase Report")
-            y -= 25
-            c.setFont("Helvetica", 10)
-            c.drawString(50, y, f"Date Range: {start} → {end}")
-            y -= 15
-            c.drawString(50, y, f"Generated by POS System")
-            y -= 20
-            c.line(50, y, width - 50, y)
-            y -= 20
+            for index, (_, _, _, stock, _, _) in enumerate(rows, start=1):
+                if float(stock or 0) < 20:
+                    table.setStyle(TableStyle([
+                        ("TEXTCOLOR", (6, index), (6, index), colors.red),
+                        ("FONTNAME", (6, index), (6, index), "Helvetica-Bold"),
+                    ]))
 
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(50, y, "Product")
-            c.drawString(150, y, "Qty")
-            c.drawString(190, y, "Cost/Box")
-            c.drawString(250, y, "Remaining")
-            c.drawString(320, y, "Supplier")
-            c.drawString(420, y, "Date")
-            y -= 15
-            c.line(50, y, width - 50, y)
-            y -= 10
+            elements.append(table)
+            doc.build(elements)
 
-            c.setFont("Helvetica", 9)
-            total_qty = 0
-            total_cost = 0
-
-            for product, qty, price, date, supplier, notes, remaining in rows:
-                c.drawString(50, y, product[:18])
-                c.drawString(150, y, str(qty))
-                c.drawString(190, y, f"{price:.2f}")
-                c.drawString(250, y, str(remaining))
-                c.drawString(320, y, supplier[:15])
-                c.drawString(420, y, date)
-                y -= 12
-                if notes:
-                    c.setFont("Helvetica-Oblique", 8)
-                    c.drawString(60, y, f"Note: {notes[:70]}")
-                    c.setFont("Helvetica", 9)
-                    y -= 10
-
-                total_qty += qty
-                total_cost += qty * price
-
-                if y < 80:
-                    c.showPage()
-                    c.setFont("Helvetica", 9)
-                    y = height - 60
-
-            y -= 10
-            c.line(50, y, width - 50, y)
-            y -= 15
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Total Boxes Purchased: {total_qty}")
-            y -= 15
-            c.drawString(50, y, f"Total Purchase Cost: {total_cost:.2f}")
-            c.save()
-
-            QMessageBox.information(self, "Report Generated",
-                                    f"✅ Stock Purchase Report saved as {filename}")
-
+            QMessageBox.information(self, "Stock Report Generated", f"✅ Stock report generated successfully.\n\nFile: {filename}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate stock report:\n{e}")
+            QMessageBox.critical(self, "Report Error", f"Failed to generate stock report:\n{e}")
